@@ -1,0 +1,27 @@
+{
+  "accounts": [
+    {
+      "name": "Production_Account",
+      "type": "azure",
+      "tenant_id": "your-tenant-id-here",
+      "subscription_id": "your-subscription-id-here",
+      "description": "Production Environment"
+    },
+    {
+      "name": "Development_Account",
+      "type": "azure", 
+      "tenant_id": "your-tenant-id-here",
+      "subscription_id": "your-subscription-id-here",
+      "description": "Development Environment"
+    }
+  ],
+  "aws_accounts": [
+    {
+      "name": "AWS_Production",
+      "type": "aws",
+      "region": "ap-northeast-2",
+      "profile": "default",
+      "description": "AWS Production Environment"
+    }
+  ]
+}
