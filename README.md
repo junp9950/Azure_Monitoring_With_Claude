@@ -12,7 +12,7 @@ Azure 백업 상태와 VM 메트릭을 모니터링하는 종합 대시보드입
 - 여러 Azure 계정을 자동으로 순회하며 백업 상태 확인
 - 스케줄링 기능 포함
 
-### 3. 서비스프린시팔 (자동인증)
+### 3. ServicePrincipal (자동인증)
 - Service Principal을 이용한 무인증 자동화
 - CI/CD 파이프라인에 적합
 
@@ -49,8 +49,8 @@ pip install -r requirements_web.txt
 # 기본 인증용
 cp 계정설정_공통.json.template 계정설정_공통.json
 
-# 서비스 프린시팔용
-cp 계정설정_서비스프린시팔.json.template 계정설정_서비스프린시팔.json
+# ServicePrincipal용
+cp 계정설정_ServicePrincipal.json.template 계정설정_ServicePrincipal.json
 ```
 
 #### 3.2 Azure 정보 입력
