@@ -146,6 +146,58 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# 전역 인증 관리자
+class AzureCredentialManager:
+    def __init__(self):
+        self.credentials = {}
+        self.clients = {}
+    
+    def get_credential(self, tenant_id):
+        """테넌트별 인증 객체 캐싱"""
+        if tenant_id not in self.credentials:
+            self.credentials[tenant_id] = InteractiveBrowserCredential(
+                tenant_id=tenant_id,
+                timeout=300  # 5분 타임아웃
+            )
+            st.info(f"🔐 {tenant_id[:8]}... 테넌트에 대한 새로운 인증을 생성합니다.")
+        return self.credentials[tenant_id]
+    
+    def get_compute_client(self, tenant_id, subscription_id):
+        """Compute 클라이언트 캐싱"""
+        key = f"compute_{tenant_id}_{subscription_id}"
+        if key not in self.clients:
+            credential = self.get_credential(tenant_id)
+            self.clients[key] = ComputeManagementClient(credential, subscription_id)
+        return self.clients[key]
+    
+    def get_monitor_client(self, tenant_id, subscription_id):
+        """Monitor 클라이언트 캐싱"""
+        key = f"monitor_{tenant_id}_{subscription_id}"
+        if key not in self.clients:
+            credential = self.get_credential(tenant_id)
+            self.clients[key] = MonitorManagementClient(credential, subscription_id)
+        return self.clients[key]
+    
+    def get_recovery_client(self, tenant_id, subscription_id):
+        """Recovery Services 클라이언트 캐싱"""
+        key = f"recovery_{tenant_id}_{subscription_id}"
+        if key not in self.clients:
+            credential = self.get_credential(tenant_id)
+            self.clients[key] = RecoveryServicesClient(credential, subscription_id)
+        return self.clients[key]
+    
+    def get_backup_client(self, tenant_id, subscription_id):
+        """Backup 클라이언트 캐싱"""
+        key = f"backup_{tenant_id}_{subscription_id}"
+        if key not in self.clients:
+            credential = self.get_credential(tenant_id)
+            self.clients[key] = RecoveryServicesBackupClient(credential, subscription_id)
+        return self.clients[key]
+
+# 전역 인증 관리자 인스턴스
+if 'credential_manager' not in st.session_state:
+    st.session_state.credential_manager = AzureCredentialManager()
+
 @st.cache_data
 def load_accounts_config():
     """계정 설정 파일 로드 (캐시됨)"""
@@ -163,8 +215,10 @@ def load_accounts_config():
 def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
     """VM의 24시간 메트릭 추이 데이터 수집"""
     try:
-        credential = InteractiveBrowserCredential(tenant_id=account_info['tenant_id'])
-        monitor_client = MonitorManagementClient(credential, account_info['subscription_id'])
+        monitor_client = st.session_state.credential_manager.get_monitor_client(
+            account_info['tenant_id'], 
+            account_info['subscription_id']
+        )
         
         # 24시간 전부터 현재까지
         end_time = datetime.utcnow()
@@ -187,7 +241,7 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
                 cpu_metrics = monitor_client.metrics.list(
                     resource_uri=vm_id,
                     timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
-                    interval='PT1H',  # 1시간 간격
+                    interval='PT1M',  # 1분 간격
                     metricnames='Percentage CPU',
                     aggregation='Average'
                 )
@@ -205,7 +259,7 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
                 disk_metrics = monitor_client.metrics.list(
                     resource_uri=vm_id,
                     timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
-                    interval='PT1H',
+                    interval='PT1M',
                     metricnames='Disk Read Bytes',
                     aggregation='Total'
                 )
@@ -246,10 +300,15 @@ def get_azure_vms(account_info, progress_bar, status_text, collect_metrics=True)
         status_text.text(f"🔐 {account_info['name']} Azure 인증 중...")
         progress_bar.progress(0.1)
         
-        # Azure 인증
-        credential = InteractiveBrowserCredential(tenant_id=account_info['tenant_id'])
-        compute_client = ComputeManagementClient(credential, account_info['subscription_id'])
-        monitor_client = MonitorManagementClient(credential, account_info['subscription_id']) if collect_metrics else None
+        # Azure 클라이언트 생성 (캐시된 인증 사용)
+        compute_client = st.session_state.credential_manager.get_compute_client(
+            account_info['tenant_id'], 
+            account_info['subscription_id']
+        )
+        monitor_client = st.session_state.credential_manager.get_monitor_client(
+            account_info['tenant_id'], 
+            account_info['subscription_id']
+        ) if collect_metrics else None
         
         status_text.text(f"🖥️ {account_info['name']} VM 목록 조회 중...")
         progress_bar.progress(0.2)
@@ -406,14 +465,11 @@ def get_backup_jobs(account_info, progress_bar, status_text):
     def fetch_data():
         """별도 스레드에서 데이터 조회"""
         try:
-            # 인증
-            credential = InteractiveBrowserCredential(
-                tenant_id=account_info['tenant_id'],
-                timeout=60  # 1분 타임아웃
+            # Recovery Services Client 생성 (캐시된 인증 사용)
+            recovery_client = st.session_state.credential_manager.get_recovery_client(
+                account_info['tenant_id'], 
+                account_info['subscription_id']
             )
-            
-            # Recovery Services Client 생성
-            recovery_client = RecoveryServicesClient(credential, account_info['subscription_id'])
             
             # Vault 목록 조회 (타임아웃 적용)
             import signal
@@ -444,9 +500,11 @@ def get_backup_jobs(account_info, progress_bar, status_text):
         max_wait_time = 60  # 60초 타임아웃
         
         try:
-            # 인증 및 클라이언트 생성
-            credential = InteractiveBrowserCredential(tenant_id=account_info['tenant_id'])
-            recovery_client = RecoveryServicesClient(credential, account_info['subscription_id'])
+            # 클라이언트 생성 (캐시된 인증 사용)
+            recovery_client = st.session_state.credential_manager.get_recovery_client(
+                account_info['tenant_id'], 
+                account_info['subscription_id']
+            )
             
             # 진행상황 업데이트
             progress_bar.progress(0.4)
@@ -473,8 +531,11 @@ def get_backup_jobs(account_info, progress_bar, status_text):
             progress_bar.progress(0.6)
             status_text.text(f"🔍 {account_info['name']}: {len(vaults)}개 Vault에서 백업 작업 조회 중...")
             
-            # Backup Client 생성
-            backup_client = RecoveryServicesBackupClient(credential, account_info['subscription_id'])
+            # Backup Client 생성 (캐시된 인증 사용)
+            backup_client = st.session_state.credential_manager.get_backup_client(
+                account_info['tenant_id'], 
+                account_info['subscription_id']
+            )
             
             all_jobs = []
             KST = timezone(timedelta(hours=9))
@@ -801,7 +862,7 @@ def display_vm_monitoring():
             with col4:
                 if collect_metrics:
                     # 메트릭이 수집된 VM 수 계산
-                    metrics_collected = len([vm for vm in vm_data if vm.get('cpu_usage') != 'N/A'])
+                    metrics_collected = len([vm for vm in df.to_dict('records') if vm.get('cpu_usage') != 'N/A'])
                     st.metric("메트릭 수집됨", f"{metrics_collected}개 VM")
                 else:
                     st.metric("메트릭 수집", "비활성화됨")
@@ -840,6 +901,105 @@ def display_vm_monitoring():
                     color_discrete_map=colors
                 )
                 st.plotly_chart(fig2, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # 24시간 추이 분석 섹션 (독립적으로 사용 가능)
+            st.subheader("📈 24시간 성능 추이 분석")
+            
+            # 24시간 메트릭 수집 버튼
+            if st.button("🔄 24시간 추이 데이터 수집", key="collect_24h_metrics_main"):
+                with st.spinner("24시간 메트릭 데이터를 수집하는 중..."):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    all_trends = {}
+                    for account in selected_accounts:
+                        account_info = next(acc for acc in accounts if acc['name'] == account)
+                        running_vms = [vm for vm in df.to_dict('records') if vm['account_name'] == account and vm['power_state'] == 'VM running']
+                        
+                        if running_vms:
+                            try:
+                                trends = get_vm_24h_metrics(account_info, running_vms, progress_bar, status_text)
+                                all_trends.update(trends)
+                            except Exception as e:
+                                st.warning(f"❌ {account} 계정의 24시간 메트릭 수집 실패: {str(e)}")
+                    
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ 24시간 메트릭 수집 완료!")
+                    
+                    # 세션에 저장
+                    st.session_state['vm_trends'] = all_trends
+            
+            # 저장된 24시간 추이 데이터가 있으면 차트 표시
+            if 'vm_trends' in st.session_state and st.session_state['vm_trends']:
+                st.success(f"📊 {len(st.session_state['vm_trends'])}개 VM의 24시간 추이 데이터를 표시합니다.")
+                
+                # VM 선택
+                vm_names = list(st.session_state['vm_trends'].keys())
+                selected_vm = st.selectbox("분석할 VM 선택:", vm_names, key="trend_vm_select_main")
+                
+                if selected_vm and selected_vm in st.session_state['vm_trends']:
+                    vm_trend = st.session_state['vm_trends'][selected_vm]
+                    
+                    # 24시간 추이 차트 2개 컬럼으로 표시
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # CPU 추이 차트
+                        if vm_trend.get('cpu_trend'):
+                            cpu_df = pd.DataFrame(vm_trend['cpu_trend'])
+                            cpu_df['timestamp'] = pd.to_datetime(cpu_df['timestamp'])
+                            
+                            fig_cpu_trend = px.line(
+                                cpu_df,
+                                x='timestamp',
+                                y='value',
+                                title=f'💻 {selected_vm} - CPU 사용률 24시간 추이',
+                                labels={'value': 'CPU %', 'timestamp': '시간'}
+                            )
+                            fig_cpu_trend.update_layout(height=400)
+                            st.plotly_chart(fig_cpu_trend, use_container_width=True)
+                        else:
+                            st.info("CPU 추이 데이터가 없습니다.")
+                    
+                    with col2:
+                        # 디스크 추이 차트
+                        if vm_trend.get('disk_trend'):
+                            disk_df = pd.DataFrame(vm_trend['disk_trend'])
+                            disk_df['timestamp'] = pd.to_datetime(disk_df['timestamp'])
+                            
+                            fig_disk_trend = px.line(
+                                disk_df,
+                                x='timestamp',
+                                y='value',
+                                title=f'💾 {selected_vm} - 디스크 읽기 24시간 추이',
+                                labels={'value': 'Bytes', 'timestamp': '시간'}
+                            )
+                            fig_disk_trend.update_layout(height=400)
+                            st.plotly_chart(fig_disk_trend, use_container_width=True)
+                        else:
+                            st.info("디스크 추이 데이터가 없습니다.")
+                    
+                    # 통계 정보 표시
+                    st.markdown("### 📊 24시간 통계 요약")
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    if vm_trend.get('cpu_trend'):
+                        cpu_values = [d['value'] for d in vm_trend['cpu_trend']]
+                        with col1:
+                            st.metric("평균 CPU", f"{np.mean(cpu_values):.1f}%")
+                        with col2:
+                            st.metric("최대 CPU", f"{np.max(cpu_values):.1f}%")
+                    
+                    if vm_trend.get('disk_trend'):
+                        disk_values = [d['value'] for d in vm_trend['disk_trend']]
+                        with col3:
+                            st.metric("평균 디스크 읽기", f"{np.mean(disk_values):.0f} Bytes")
+                        with col4:
+                            st.metric("최대 디스크 읽기", f"{np.max(disk_values):.0f} Bytes")
+            else:
+                st.info("💡 24시간 추이 분석을 위해 위의 '24시간 추이 데이터 수집' 버튼을 클릭하세요.")
             
             # 메트릭 차트 (메트릭 수집이 활성화된 경우에만 표시)
             if collect_metrics:
@@ -922,104 +1082,6 @@ def display_vm_monitoring():
                             st.warning(f"디스크 차트 생성 오류: {str(e)}")
                 else:
                     st.info("📊 메트릭을 수집할 수 있는 VM이 없습니다. (실행 중인 VM만 메트릭 수집 가능)")
-                
-                # 24시간 추이 분석 섹션
-                st.markdown("---")
-                st.subheader("📈 24시간 성능 추이 분석")
-                
-                # 24시간 메트릭 수집 버튼
-                if st.button("🔄 24시간 추이 데이터 수집", key="collect_24h_metrics"):
-                    with st.spinner("24시간 메트릭 데이터를 수집하는 중..."):
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        all_trends = {}
-                        for account in selected_accounts:
-                            account_info = next(acc for acc in accounts if acc['name'] == account)
-                            running_vms = [vm for vm in vm_data if vm['account_name'] == account and vm['power_state'] == 'VM running']
-                            
-                            if running_vms:
-                                try:
-                                    trends = get_vm_24h_metrics(account_info, running_vms, progress_bar, status_text)
-                                    all_trends.update(trends)
-                                except Exception as e:
-                                    st.warning(f"❌ {account} 계정의 24시간 메트릭 수집 실패: {str(e)}")
-                        
-                        progress_bar.progress(1.0)
-                        status_text.text("✅ 24시간 메트릭 수집 완료!")
-                        
-                        # 세션에 저장
-                        st.session_state['vm_trends'] = all_trends
-                
-                # 저장된 24시간 추이 데이터가 있으면 차트 표시
-                if 'vm_trends' in st.session_state and st.session_state['vm_trends']:
-                    st.success(f"📊 {len(st.session_state['vm_trends'])}개 VM의 24시간 추이 데이터를 표시합니다.")
-                    
-                    # VM 선택
-                    vm_names = list(st.session_state['vm_trends'].keys())
-                    selected_vm = st.selectbox("분석할 VM 선택:", vm_names, key="trend_vm_select")
-                    
-                    if selected_vm and selected_vm in st.session_state['vm_trends']:
-                        vm_trend = st.session_state['vm_trends'][selected_vm]
-                        
-                        # 24시간 추이 차트 3개 컬럼으로 표시
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # CPU 추이 차트
-                            if vm_trend.get('cpu_trend'):
-                                cpu_df = pd.DataFrame(vm_trend['cpu_trend'])
-                                cpu_df['timestamp'] = pd.to_datetime(cpu_df['timestamp'])
-                                
-                                fig_cpu_trend = px.line(
-                                    cpu_df,
-                                    x='timestamp',
-                                    y='value',
-                                    title=f'💻 {selected_vm} - CPU 사용률 24시간 추이',
-                                    labels={'value': 'CPU %', 'timestamp': '시간'}
-                                )
-                                fig_cpu_trend.update_layout(height=400)
-                                st.plotly_chart(fig_cpu_trend, use_container_width=True)
-                            else:
-                                st.info("CPU 추이 데이터가 없습니다.")
-                        
-                        with col2:
-                            # 디스크 추이 차트
-                            if vm_trend.get('disk_trend'):
-                                disk_df = pd.DataFrame(vm_trend['disk_trend'])
-                                disk_df['timestamp'] = pd.to_datetime(disk_df['timestamp'])
-                                
-                                fig_disk_trend = px.line(
-                                    disk_df,
-                                    x='timestamp',
-                                    y='value',
-                                    title=f'💾 {selected_vm} - 디스크 읽기 24시간 추이',
-                                    labels={'value': 'Bytes', 'timestamp': '시간'}
-                                )
-                                fig_disk_trend.update_layout(height=400)
-                                st.plotly_chart(fig_disk_trend, use_container_width=True)
-                            else:
-                                st.info("디스크 추이 데이터가 없습니다.")
-                        
-                        # 통계 정보 표시
-                        st.markdown("### 📊 24시간 통계 요약")
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        if vm_trend.get('cpu_trend'):
-                            cpu_values = [d['value'] for d in vm_trend['cpu_trend']]
-                            with col1:
-                                st.metric("평균 CPU", f"{np.mean(cpu_values):.1f}%")
-                            with col2:
-                                st.metric("최대 CPU", f"{np.max(cpu_values):.1f}%")
-                        
-                        if vm_trend.get('disk_trend'):
-                            disk_values = [d['value'] for d in vm_trend['disk_trend']]
-                            with col3:
-                                st.metric("평균 디스크 읽기", f"{np.mean(disk_values):.0f} Bytes")
-                            with col4:
-                                st.metric("최대 디스크 읽기", f"{np.max(disk_values):.0f} Bytes")
-                else:
-                    st.info("💡 24시간 추이 분석을 위해 위의 '24시간 추이 데이터 수집' 버튼을 클릭하세요.")
             
             st.markdown("---")
             
