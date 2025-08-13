@@ -11,6 +11,7 @@ from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.monitor import MonitorManagementClient
 from azure.core.exceptions import AzureError
 import time
+import numpy as np
 
 # 페이지 설정
 st.set_page_config(
@@ -798,7 +799,12 @@ def display_vm_monitoring():
             with col3:
                 st.metric("중지됨", stopped_vms)
             with col4:
-                st.metric("메트릭 수집", "Phase 2에서 구현 예정")
+                if collect_metrics:
+                    # 메트릭이 수집된 VM 수 계산
+                    metrics_collected = len([vm for vm in vm_data if vm.get('cpu_usage') != 'N/A'])
+                    st.metric("메트릭 수집됨", f"{metrics_collected}개 VM")
+                else:
+                    st.metric("메트릭 수집", "비활성화됨")
             
             st.markdown("---")
             
@@ -834,6 +840,186 @@ def display_vm_monitoring():
                     color_discrete_map=colors
                 )
                 st.plotly_chart(fig2, use_container_width=True)
+            
+            # 메트릭 차트 (메트릭 수집이 활성화된 경우에만 표시)
+            if collect_metrics:
+                st.markdown("---")
+                st.subheader("📊 VM 성능 메트릭")
+                
+                # 메트릭이 수집된 VM들만 필터링
+                metrics_df = df[df['cpu_usage'] != 'N/A'].copy()
+                
+                if not metrics_df.empty:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        # CPU 사용률 차트
+                        try:
+                            metrics_df['cpu_numeric'] = pd.to_numeric(metrics_df['cpu_usage'].str.replace('%', ''), errors='coerce')
+                            cpu_chart_df = metrics_df.dropna(subset=['cpu_numeric'])
+                            
+                            if not cpu_chart_df.empty:
+                                fig_cpu = px.bar(
+                                    cpu_chart_df.head(10),  # 상위 10개만 표시
+                                    x='vm_name',
+                                    y='cpu_numeric',
+                                    title='💻 CPU 사용률 (%)',
+                                    color='cpu_numeric',
+                                    color_continuous_scale='Reds'
+                                )
+                                fig_cpu.update_xaxes(tickangle=45)
+                                fig_cpu.update_layout(showlegend=False, height=400)
+                                st.plotly_chart(fig_cpu, use_container_width=True)
+                            else:
+                                st.info("CPU 데이터를 처리할 수 없습니다.")
+                        except Exception as e:
+                            st.warning(f"CPU 차트 생성 오류: {str(e)}")
+                    
+                    with col2:
+                        # 메모리 사용률 차트  
+                        try:
+                            metrics_df['memory_numeric'] = pd.to_numeric(metrics_df['memory_usage'].str.replace('%', ''), errors='coerce')
+                            memory_chart_df = metrics_df.dropna(subset=['memory_numeric'])
+                            
+                            if not memory_chart_df.empty:
+                                fig_memory = px.bar(
+                                    memory_chart_df.head(10),
+                                    x='vm_name',
+                                    y='memory_numeric', 
+                                    title='🧠 메모리 사용률 (%)',
+                                    color='memory_numeric',
+                                    color_continuous_scale='Blues'
+                                )
+                                fig_memory.update_xaxes(tickangle=45)
+                                fig_memory.update_layout(showlegend=False, height=400)
+                                st.plotly_chart(fig_memory, use_container_width=True)
+                            else:
+                                st.info("메모리 데이터를 처리할 수 없습니다.")
+                        except Exception as e:
+                            st.warning(f"메모리 차트 생성 오류: {str(e)}")
+                    
+                    with col3:
+                        # 디스크 사용률 차트
+                        try:
+                            metrics_df['disk_numeric'] = pd.to_numeric(metrics_df['disk_usage'].str.replace('MB/s', '').str.replace('GB/s', ''), errors='coerce')
+                            disk_chart_df = metrics_df.dropna(subset=['disk_numeric'])
+                            
+                            if not disk_chart_df.empty:
+                                fig_disk = px.bar(
+                                    disk_chart_df.head(10),
+                                    x='vm_name',
+                                    y='disk_numeric',
+                                    title='💾 디스크 I/O (MB/s)',
+                                    color='disk_numeric',
+                                    color_continuous_scale='Greens'
+                                )
+                                fig_disk.update_xaxes(tickangle=45)
+                                fig_disk.update_layout(showlegend=False, height=400)
+                                st.plotly_chart(fig_disk, use_container_width=True)
+                            else:
+                                st.info("디스크 데이터를 처리할 수 없습니다.")
+                        except Exception as e:
+                            st.warning(f"디스크 차트 생성 오류: {str(e)}")
+                else:
+                    st.info("📊 메트릭을 수집할 수 있는 VM이 없습니다. (실행 중인 VM만 메트릭 수집 가능)")
+                
+                # 24시간 추이 분석 섹션
+                st.markdown("---")
+                st.subheader("📈 24시간 성능 추이 분석")
+                
+                # 24시간 메트릭 수집 버튼
+                if st.button("🔄 24시간 추이 데이터 수집", key="collect_24h_metrics"):
+                    with st.spinner("24시간 메트릭 데이터를 수집하는 중..."):
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        all_trends = {}
+                        for account in selected_accounts:
+                            account_info = next(acc for acc in accounts if acc['name'] == account)
+                            running_vms = [vm for vm in vm_data if vm['account_name'] == account and vm['power_state'] == 'VM running']
+                            
+                            if running_vms:
+                                try:
+                                    trends = get_vm_24h_metrics(account_info, running_vms, progress_bar, status_text)
+                                    all_trends.update(trends)
+                                except Exception as e:
+                                    st.warning(f"❌ {account} 계정의 24시간 메트릭 수집 실패: {str(e)}")
+                        
+                        progress_bar.progress(1.0)
+                        status_text.text("✅ 24시간 메트릭 수집 완료!")
+                        
+                        # 세션에 저장
+                        st.session_state['vm_trends'] = all_trends
+                
+                # 저장된 24시간 추이 데이터가 있으면 차트 표시
+                if 'vm_trends' in st.session_state and st.session_state['vm_trends']:
+                    st.success(f"📊 {len(st.session_state['vm_trends'])}개 VM의 24시간 추이 데이터를 표시합니다.")
+                    
+                    # VM 선택
+                    vm_names = list(st.session_state['vm_trends'].keys())
+                    selected_vm = st.selectbox("분석할 VM 선택:", vm_names, key="trend_vm_select")
+                    
+                    if selected_vm and selected_vm in st.session_state['vm_trends']:
+                        vm_trend = st.session_state['vm_trends'][selected_vm]
+                        
+                        # 24시간 추이 차트 3개 컬럼으로 표시
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # CPU 추이 차트
+                            if vm_trend.get('cpu_trend'):
+                                cpu_df = pd.DataFrame(vm_trend['cpu_trend'])
+                                cpu_df['timestamp'] = pd.to_datetime(cpu_df['timestamp'])
+                                
+                                fig_cpu_trend = px.line(
+                                    cpu_df,
+                                    x='timestamp',
+                                    y='value',
+                                    title=f'💻 {selected_vm} - CPU 사용률 24시간 추이',
+                                    labels={'value': 'CPU %', 'timestamp': '시간'}
+                                )
+                                fig_cpu_trend.update_layout(height=400)
+                                st.plotly_chart(fig_cpu_trend, use_container_width=True)
+                            else:
+                                st.info("CPU 추이 데이터가 없습니다.")
+                        
+                        with col2:
+                            # 디스크 추이 차트
+                            if vm_trend.get('disk_trend'):
+                                disk_df = pd.DataFrame(vm_trend['disk_trend'])
+                                disk_df['timestamp'] = pd.to_datetime(disk_df['timestamp'])
+                                
+                                fig_disk_trend = px.line(
+                                    disk_df,
+                                    x='timestamp',
+                                    y='value',
+                                    title=f'💾 {selected_vm} - 디스크 읽기 24시간 추이',
+                                    labels={'value': 'Bytes', 'timestamp': '시간'}
+                                )
+                                fig_disk_trend.update_layout(height=400)
+                                st.plotly_chart(fig_disk_trend, use_container_width=True)
+                            else:
+                                st.info("디스크 추이 데이터가 없습니다.")
+                        
+                        # 통계 정보 표시
+                        st.markdown("### 📊 24시간 통계 요약")
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        if vm_trend.get('cpu_trend'):
+                            cpu_values = [d['value'] for d in vm_trend['cpu_trend']]
+                            with col1:
+                                st.metric("평균 CPU", f"{np.mean(cpu_values):.1f}%")
+                            with col2:
+                                st.metric("최대 CPU", f"{np.max(cpu_values):.1f}%")
+                        
+                        if vm_trend.get('disk_trend'):
+                            disk_values = [d['value'] for d in vm_trend['disk_trend']]
+                            with col3:
+                                st.metric("평균 디스크 읽기", f"{np.mean(disk_values):.0f} Bytes")
+                            with col4:
+                                st.metric("최대 디스크 읽기", f"{np.max(disk_values):.0f} Bytes")
+                else:
+                    st.info("💡 24시간 추이 분석을 위해 위의 '24시간 추이 데이터 수집' 버튼을 클릭하세요.")
             
             st.markdown("---")
             
