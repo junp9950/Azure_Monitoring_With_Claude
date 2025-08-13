@@ -13,3 +13,4 @@ pandas>=2.1.0
 
 # 기타 유틸리티
 python-dateutil>=2.8.0
+numpy>=1.24.0
