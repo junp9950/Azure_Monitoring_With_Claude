@@ -212,17 +212,17 @@ def load_accounts_config():
         return None
 
 # Azure VM 모니터링 함수들
-def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
-    """VM의 24시간 메트릭 추이 데이터 수집"""
+def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text, interval="PT1M", hours=24):
+    """VM의 메트릭 추이 데이터 수집"""
     try:
         monitor_client = st.session_state.credential_manager.get_monitor_client(
             account_info['tenant_id'], 
             account_info['subscription_id']
         )
         
-        # 24시간 전부터 현재까지
+        # 지정된 시간 전부터 현재까지
         end_time = datetime.utcnow()
-        start_time = end_time - timedelta(hours=24)
+        start_time = end_time - timedelta(hours=hours)
         
         vm_trends = {}
         
@@ -233,15 +233,15 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
             try:
                 progress = idx / len(vm_list) 
                 progress_bar.progress(progress)
-                status_text.text(f"📈 VM '{vm['vm_name']}' 24시간 추이 수집 중... ({idx+1}/{len(vm_list)})")
+                status_text.text(f"📈 VM '{vm['vm_name']}' {hours}시간 추이 수집 중... ({idx+1}/{len(vm_list)})")
                 
                 vm_id = f"/subscriptions/{account_info['subscription_id']}/resourceGroups/{vm['resource_group']}/providers/Microsoft.Compute/virtualMachines/{vm['vm_name']}"
                 
-                # CPU 메트릭 (24시간)
+                # CPU 메트릭
                 cpu_metrics = monitor_client.metrics.list(
                     resource_uri=vm_id,
                     timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
-                    interval='PT1M',  # 1분 간격
+                    interval=interval,
                     metricnames='Percentage CPU',
                     aggregation='Average'
                 )
@@ -255,11 +255,11 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
                                 'value': data_point.average
                             })
                 
-                # 디스크 읽기 메트릭 (24시간)
+                # 디스크 읽기 메트릭
                 disk_metrics = monitor_client.metrics.list(
                     resource_uri=vm_id,
                     timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
-                    interval='PT1M',
+                    interval=interval,
                     metricnames='Disk Read Bytes',
                     aggregation='Total'
                 )
@@ -273,9 +273,33 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
                                 'value': data_point.total / (1024**2)  # MB로 변환
                             })
                 
+                # 메모리 메트릭
+                memory_metrics = monitor_client.metrics.list(
+                    resource_uri=vm_id,
+                    timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
+                    interval=interval,
+                    metricnames='Available Memory Bytes',
+                    aggregation='Average'
+                )
+                
+                memory_data = []
+                if memory_metrics.value and memory_metrics.value[0].timeseries:
+                    for data_point in memory_metrics.value[0].timeseries[0].data:
+                        if data_point.average is not None:
+                            # 사용 가능한 메모리를 사용률로 변환 (가정: 총 메모리 8GB = 8589934592 bytes)
+                            # 실제로는 VM 크기에 따라 다르지만 일단 8GB로 가정
+                            total_memory_gb = 8  # GB 단위
+                            total_memory_bytes = total_memory_gb * 1024**3
+                            used_memory_percent = ((total_memory_bytes - data_point.average) / total_memory_bytes) * 100
+                            memory_data.append({
+                                'timestamp': data_point.time_stamp,
+                                'value': max(0, min(100, used_memory_percent))  # 0-100% 범위 보장
+                            })
+                
                 vm_trends[vm['vm_name']] = {
                     'cpu_trend': cpu_data,
                     'disk_trend': disk_data,
+                    'memory_trend': memory_data,
                     'account_name': vm['account_name'],
                     'resource_group': vm['resource_group']
                 }
@@ -283,15 +307,15 @@ def get_vm_24h_metrics(account_info, vm_list, progress_bar, status_text):
                 time.sleep(0.2)  # API 레이트 리미트 방지
                 
             except Exception as vm_error:
-                st.warning(f"⚠️ VM '{vm['vm_name']}' 24시간 메트릭 수집 실패: {str(vm_error)[:100]}...")
+                st.warning(f"⚠️ VM '{vm['vm_name']}' {hours}시간 메트릭 수집 실패: {str(vm_error)[:100]}...")
                 continue
         
         progress_bar.progress(1.0)
-        status_text.text(f"✅ 24시간 추이 데이터 수집 완료!")
+        status_text.text(f"✅ {hours}시간 추이 데이터 수집 완료!")
         return vm_trends
         
     except Exception as e:
-        st.error(f"🚨 24시간 메트릭 수집 오류: {str(e)}")
+        st.error(f"🚨 메트릭 수집 오류: {str(e)}")
         return {}
 
 def get_azure_vms(account_info, progress_bar, status_text, collect_metrics=True):
@@ -724,15 +748,10 @@ def display_vm_monitoring():
                                      help="VM의 현재 CPU, Memory, Disk 사용률을 수집합니다.")
     
     with col_option2:
-        collect_trends = st.checkbox("📈 24시간 추이 데이터 수집", 
-                                    value=False, 
-                                    help="VM의 24시간 메트릭 추이를 수집합니다. 시간이 오래 걸립니다.")
+        pass  # 추이 데이터 수집 옵션 제거됨
     
-    if collect_metrics or collect_trends:
-        if collect_trends:
-            st.warning("⚠️ 24시간 추이 데이터 수집은 시간이 오래 걸리며 API 비용이 발생할 수 있습니다.")
-        else:
-            st.info("💡 메트릭 수집은 실행 중인 VM에 대해서만 진행됩니다.")
+    if collect_metrics:
+        st.info("💡 메트릭 수집은 실행 중인 VM에 대해서만 진행됩니다.")
     
     # VM 조회 버튼
     if st.button("🚀 Azure VM 상태 조회", type="primary"):
@@ -796,38 +815,6 @@ def display_vm_monitoring():
         
         st.success(f"✅ 총 {len(all_vms)}개 Azure VM을 조회했습니다!")
         
-        # 24시간 추이 데이터 수집
-        if collect_trends and all_vms:
-            st.markdown("---")
-            st.subheader("📈 24시간 메트릭 추이 수집")
-            
-            # 전체 진행률 표시
-            trend_progress = st.progress(0)
-            trend_status = st.empty()
-            
-            all_trends = {}
-            for i, account in enumerate(selected_configs):
-                account_vms = [vm for vm in all_vms if vm['account_name'] == account['name']]
-                if account_vms:
-                    with st.expander(f"📈 [{i+1}/{len(selected_configs)}] {account['name']} 24시간 추이", expanded=True):
-                        account_progress = st.progress(0)
-                        account_status = st.empty()
-                        
-                        account_trends = get_vm_24h_metrics(account, account_vms, account_progress, account_status)
-                        all_trends.update(account_trends)
-                        
-                        st.success(f"✅ {len(account_trends)}개 VM의 24시간 추이 데이터 수집 완료!")
-                
-                # 전체 진행률 업데이트
-                trend_progress_value = (i + 1) / len(selected_configs)
-                trend_progress.progress(trend_progress_value)
-                trend_status.text(f"🔄 {i+1}/{len(selected_configs)} 계정 추이 데이터 수집 완료")
-            
-            # 24시간 추이 데이터 저장
-            st.session_state['vm_trends'] = all_trends
-            st.session_state['trends_last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            st.success(f"✅ 총 {len(all_trends)}개 VM의 24시간 추이 데이터 수집 완료!")
     
     # VM 결과 표시
     if 'azure_vms' in st.session_state:
@@ -907,9 +894,46 @@ def display_vm_monitoring():
             # 24시간 추이 분석 섹션 (독립적으로 사용 가능)
             st.subheader("📈 24시간 성능 추이 분석")
             
+            # 메트릭 수집 설정
+            col1, col2 = st.columns(2)
+            
+            # 분석 기간 선택
+            period_options = {
+                "1시간": 1,
+                "3시간": 3, 
+                "6시간": 6,
+                "12시간": 12,
+                "24시간": 24,
+                "48시간": 48
+            }
+            
+            # 수집 간격 선택
+            interval_options = {
+                "1분": "PT1M",
+                "5분": "PT5M", 
+                "15분": "PT15M",
+                "30분": "PT30M",
+                "1시간": "PT1H",
+                "6시간": "PT6H"
+            }
+            
+            with col1:
+                selected_period = st.selectbox(
+                    "📊 분석 기간",
+                    options=list(period_options.keys()),
+                    index=4  # 기본값: 24시간
+                )
+            
+            with col2:
+                selected_interval = st.selectbox(
+                    "⏰ 수집 간격", 
+                    options=list(interval_options.keys()),
+                    index=2  # 기본값: 15분
+                )
+            
             # 24시간 메트릭 수집 버튼
             if st.button("🔄 24시간 추이 데이터 수집", key="collect_24h_metrics_main"):
-                with st.spinner("24시간 메트릭 데이터를 수집하는 중..."):
+                with st.spinner(f"{selected_period} 메트릭 데이터를 {selected_interval} 간격으로 수집하는 중..."):
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
@@ -920,20 +944,32 @@ def display_vm_monitoring():
                         
                         if running_vms:
                             try:
-                                trends = get_vm_24h_metrics(account_info, running_vms, progress_bar, status_text)
+                                trends = get_vm_24h_metrics(
+                                    account_info, 
+                                    running_vms, 
+                                    progress_bar, 
+                                    status_text,
+                                    interval=interval_options[selected_interval],
+                                    hours=period_options[selected_period]
+                                )
                                 all_trends.update(trends)
                             except Exception as e:
-                                st.warning(f"❌ {account} 계정의 24시간 메트릭 수집 실패: {str(e)}")
+                                st.warning(f"❌ {account} 계정의 메트릭 수집 실패: {str(e)}")
                     
                     progress_bar.progress(1.0)
-                    status_text.text("✅ 24시간 메트릭 수집 완료!")
+                    status_text.text("✅ 메트릭 수집 완료!")
                     
-                    # 세션에 저장
+                    # 세션에 설정 정보와 함께 저장
                     st.session_state['vm_trends'] = all_trends
+                    st.session_state['trends_config'] = {
+                        'interval': selected_interval,
+                        'period': selected_period
+                    }
             
             # 저장된 24시간 추이 데이터가 있으면 차트 표시
             if 'vm_trends' in st.session_state and st.session_state['vm_trends']:
-                st.success(f"📊 {len(st.session_state['vm_trends'])}개 VM의 24시간 추이 데이터를 표시합니다.")
+                config = st.session_state.get('trends_config', {'interval': '15분', 'period': '24시간'})
+                st.success(f"📊 {len(st.session_state['vm_trends'])}개 VM의 {config['period']} 추이 데이터를 표시합니다. ({config['interval']} 간격)")
                 
                 # VM 선택
                 vm_names = list(st.session_state['vm_trends'].keys())
@@ -942,8 +978,13 @@ def display_vm_monitoring():
                 if selected_vm and selected_vm in st.session_state['vm_trends']:
                     vm_trend = st.session_state['vm_trends'][selected_vm]
                     
-                    # 24시간 추이 차트 2개 컬럼으로 표시
-                    col1, col2 = st.columns(2)
+                    # 수집 설정 정보 가져오기
+                    config = st.session_state.get('trends_config', {'interval': '1분', 'period': '24시간'})
+                    interval_text = config['interval']
+                    period_text = config['period']
+                    
+                    # 추이 차트 3개 컬럼으로 표시
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
                         # CPU 추이 차트
@@ -955,7 +996,7 @@ def display_vm_monitoring():
                                 cpu_df,
                                 x='timestamp',
                                 y='value',
-                                title=f'💻 {selected_vm} - CPU 사용률 24시간 추이',
+                                title=f'💻 {selected_vm} - CPU 사용률 {period_text} 추이 ({interval_text} 간격)',
                                 labels={'value': 'CPU %', 'timestamp': '시간'}
                             )
                             fig_cpu_trend.update_layout(height=400)
@@ -964,6 +1005,24 @@ def display_vm_monitoring():
                             st.info("CPU 추이 데이터가 없습니다.")
                     
                     with col2:
+                        # 메모리 추이 차트
+                        if vm_trend.get('memory_trend'):
+                            memory_df = pd.DataFrame(vm_trend['memory_trend'])
+                            memory_df['timestamp'] = pd.to_datetime(memory_df['timestamp'])
+                            
+                            fig_memory_trend = px.line(
+                                memory_df,
+                                x='timestamp',
+                                y='value',
+                                title=f'🧠 {selected_vm} - 메모리 사용률 {period_text} 추이 ({interval_text} 간격)',
+                                labels={'value': '메모리 %', 'timestamp': '시간'}
+                            )
+                            fig_memory_trend.update_layout(height=400)
+                            st.plotly_chart(fig_memory_trend, use_container_width=True)
+                        else:
+                            st.info("메모리 추이 데이터가 없습니다.")
+                    
+                    with col3:
                         # 디스크 추이 차트
                         if vm_trend.get('disk_trend'):
                             disk_df = pd.DataFrame(vm_trend['disk_trend'])
@@ -973,7 +1032,7 @@ def display_vm_monitoring():
                                 disk_df,
                                 x='timestamp',
                                 y='value',
-                                title=f'💾 {selected_vm} - 디스크 읽기 24시간 추이',
+                                title=f'💾 {selected_vm} - 디스크 읽기 {period_text} 추이 ({interval_text} 간격)',
                                 labels={'value': 'Bytes', 'timestamp': '시간'}
                             )
                             fig_disk_trend.update_layout(height=400)
@@ -982,8 +1041,8 @@ def display_vm_monitoring():
                             st.info("디스크 추이 데이터가 없습니다.")
                     
                     # 통계 정보 표시
-                    st.markdown("### 📊 24시간 통계 요약")
-                    col1, col2, col3, col4 = st.columns(4)
+                    st.markdown(f"### 📊 {period_text} 통계 요약")
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
                     
                     if vm_trend.get('cpu_trend'):
                         cpu_values = [d['value'] for d in vm_trend['cpu_trend']]
@@ -992,12 +1051,19 @@ def display_vm_monitoring():
                         with col2:
                             st.metric("최대 CPU", f"{np.max(cpu_values):.1f}%")
                     
+                    if vm_trend.get('memory_trend'):
+                        memory_values = [d['value'] for d in vm_trend['memory_trend']]
+                        with col3:
+                            st.metric("평균 메모리", f"{np.mean(memory_values):.1f}%")
+                        with col4:
+                            st.metric("최대 메모리", f"{np.max(memory_values):.1f}%")
+                    
                     if vm_trend.get('disk_trend'):
                         disk_values = [d['value'] for d in vm_trend['disk_trend']]
-                        with col3:
-                            st.metric("평균 디스크 읽기", f"{np.mean(disk_values):.0f} Bytes")
-                        with col4:
-                            st.metric("최대 디스크 읽기", f"{np.max(disk_values):.0f} Bytes")
+                        with col5:
+                            st.metric("평균 디스크", f"{np.mean(disk_values):.0f} MB")
+                        with col6:
+                            st.metric("최대 디스크", f"{np.max(disk_values):.0f} MB")
             else:
                 st.info("💡 24시간 추이 분석을 위해 위의 '24시간 추이 데이터 수집' 버튼을 클릭하세요.")
             
