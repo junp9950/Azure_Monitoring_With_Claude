@@ -649,7 +649,8 @@ def display_vm_monitoring():
         "🏢 모니터링할 Azure 계정 선택",
         account_names,
         default=account_names,
-        help="VM 상태를 확인할 Azure 계정을 선택하세요"
+        help="VM 상태를 확인할 Azure 계정을 선택하세요",
+        key="vm_account_select"
     )
     
     # 메트릭 수집 옵션
@@ -845,13 +846,15 @@ def display_vm_monitoring():
                 state_filter = st.multiselect(
                     "상태 필터",
                     df['power_state'].unique(),
-                    default=df['power_state'].unique()
+                    default=df['power_state'].unique(),
+                    key="vm_state_filter"
                 )
             with col2:
                 account_filter = st.multiselect(
                     "계정 필터",
                     df['account_name'].unique(),
-                    default=df['account_name'].unique()
+                    default=df['account_name'].unique(),
+                    key="vm_account_filter"
                 )
             
             # 필터 적용
@@ -888,7 +891,10 @@ def display_vm_monitoring():
                 display_columns = ['account_name', 'vm_name', 'resource_group', 'power_state', 'vm_size', 
                                  'location', 'os_type', 'private_ip']
             
-            styled_df = filtered_df[display_columns].style.apply(highlight_vm_status, axis=1)
+            # 인덱스를 1부터 시작하도록 설정
+            display_df = filtered_df[display_columns].copy()
+            display_df.index = range(1, len(display_df) + 1)
+            styled_df = display_df.style.apply(highlight_vm_status, axis=1)
             
             st.dataframe(
                 styled_df,
@@ -1060,7 +1066,8 @@ def display_azure_backup_monitoring():
         "🏢 모니터링할 Azure 계정 선택",
         account_names,
         default=account_names,
-        help="백업 상태를 확인할 계정을 선택하세요"
+        help="백업 상태를 확인할 계정을 선택하세요",
+        key="backup_account_select"
     )
     
     # 자동 새로고침 설정
@@ -1206,13 +1213,15 @@ def display_azure_backup_monitoring():
                 status_filter = st.multiselect(
                     "상태 필터",
                     df['status'].unique(),
-                    default=df['status'].unique()
+                    default=df['status'].unique(),
+                    key="backup_status_filter"
                 )
             with col2:
                 account_filter = st.multiselect(
                     "계정 필터",
                     df['account_name'].unique(),
-                    default=df['account_name'].unique()
+                    default=df['account_name'].unique(),
+                    key="backup_account_filter"
                 )
             
             # 필터 적용
@@ -1247,7 +1256,10 @@ def display_azure_backup_monitoring():
             # 데이터 정렬 (시작 시간 기준 내림차순)
             filtered_df_sorted = filtered_df.sort_values('start_time', ascending=False, na_position='last')
             
-            styled_df = filtered_df_sorted[display_columns].style.apply(highlight_status, axis=1)
+            # 인덱스를 1부터 시작하도록 설정
+            display_df = filtered_df_sorted[display_columns].copy()
+            display_df.index = range(1, len(display_df) + 1)
+            styled_df = display_df.style.apply(highlight_status, axis=1)
             
             st.dataframe(
                 styled_df,
