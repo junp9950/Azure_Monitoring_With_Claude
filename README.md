@@ -47,28 +47,24 @@ pip install -r requirements_web.txt
 
 ```bash
 # 기본 인증용
-cp 계정설정_공통.json.template 계정설정_공통.json
+cp 계정설정_공통.yaml.template 계정설정_공통.yaml
 
 # ServicePrincipal용
-cp 계정설정_ServicePrincipal.json.template 계정설정_ServicePrincipal.json
+cp 계정설정_ServicePrincipal.yaml.template 계정설정_ServicePrincipal.yaml
 ```
 
 #### 3.2 Azure 정보 입력
 
-**계정설정_공통.json** 파일을 열어 다음 정보를 입력:
+**계정설정_공통.yaml** 파일을 열어 다음 정보를 입력:
 
-```json
-{
-  "accounts": [
-    {
-      "name": "Production_Account",
-      "type": "azure",
-      "tenant_id": "실제-테넌트-ID",
-      "subscription_id": "실제-구독-ID", 
-      "description": "Production Environment"
-    }
-  ]
-}
+```yaml
+# Azure 계정 설정
+accounts:
+  - name: Production_Account
+    type: azure
+    tenant_id: 실제-테넌트-ID  # Azure Portal에서 확인
+    subscription_id: 실제-구독-ID  # 구독 ID
+    description: Production Environment
 ```
 
 #### 3.3 Azure 정보 찾는 방법
@@ -128,7 +124,7 @@ Azure Monitor Metrics API 사용 시 비용이 발생할 수 있습니다:
 
 ## 🔐 보안 주의사항
 
-- `계정설정_*.json` 파일은 민감한 정보를 포함하므로 **절대 Git에 커밋하지 마세요**
+- `계정설정_*.yaml` 파일은 민감한 정보를 포함하므로 **절대 Git에 커밋하지 마세요**
 - `.gitignore`에 이미 제외 설정되어 있음
 - Service Principal 사용 시 최소 권한 원칙 적용
 

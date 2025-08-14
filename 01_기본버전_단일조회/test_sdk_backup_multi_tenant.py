@@ -1,6 +1,16 @@
 import subprocess
 import json
 from azure.identity import InteractiveBrowserCredential
+
+# YAML 모듈 자동 설치
+try:
+    import yaml
+except ImportError:
+    print("PyYAML 패키지를 설치 중입니다...")
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyYAML>=6.0"])
+    import yaml
+    print("PyYAML 설치 완료!")
 from azure.mgmt.recoveryservices import RecoveryServicesClient
 from azure.mgmt.recoveryservicesbackup import RecoveryServicesBackupClient
 from datetime import timezone, timedelta

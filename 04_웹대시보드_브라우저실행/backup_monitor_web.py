@@ -1,6 +1,17 @@
 import streamlit as st
 import json
 import pandas as pd
+
+# YAML 모듈 자동 설치
+try:
+    import yaml
+except ImportError:
+    import subprocess
+    import sys
+    st.warning("PyYAML 패키지를 설치 중입니다...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyYAML>=6.0"])
+    import yaml
+    st.success("PyYAML 설치 완료! 페이지를 새로고침해주세요.")
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
@@ -202,13 +213,19 @@ if 'credential_manager' not in st.session_state:
 def load_accounts_config():
     """계정 설정 파일 로드 (캐시됨)"""
     try:
-        with open('../계정설정_공통.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        # YAML 파일 먼저 시도
+        with open('../계정설정_공통.yaml', 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
     except FileNotFoundError:
-        st.error("❌ 계정설정_공통.json 파일을 찾을 수 없습니다.")
+        try:
+            # 기존 JSON 파일 백업으로 시도
+            with open('../계정설정_공통.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            st.error("❌ 계정설정_공통.yaml 또는 계정설정_공통.json 파일을 찾을 수 없습니다.")
         return None
-    except json.JSONDecodeError:
-        st.error("❌ 설정 파일 형식이 올바르지 않습니다.")
+    except (json.JSONDecodeError, yaml.YAMLError) as e:
+        st.error(f"❌ 설정 파일 형식이 올바르지 않습니다: {e}")
         return None
 
 # Azure VM 모니터링 함수들
@@ -1228,93 +1245,6 @@ def display_vm_monitoring():
                 },
                 height=400
             )
-            
-            # 24시간 추이 차트 표시
-            if 'vm_trends' in st.session_state and st.session_state['vm_trends']:
-                st.markdown("---")
-                st.subheader("📈 24시간 VM 메트릭 추이")
-                
-                col1, col2 = st.columns([3, 1])
-                with col2:
-                    st.caption(f"🕐 추이 데이터 업데이트: {st.session_state.get('trends_last_update', 'N/A')}")
-                
-                trends_data = st.session_state['vm_trends']
-                
-                # VM 선택 드롭다운
-                vm_names = list(trends_data.keys())
-                if vm_names:
-                    selected_vm = st.selectbox("🖥️ 추이를 볼 VM 선택", vm_names)
-                    
-                    if selected_vm and selected_vm in trends_data:
-                        vm_trend = trends_data[selected_vm]
-                        
-                        # CPU 추이 차트
-                        if vm_trend['cpu_trend']:
-                            st.markdown("#### 📶 CPU 사용률 추이 (24시간)")
-                            
-                            cpu_df = pd.DataFrame(vm_trend['cpu_trend'])
-                            cpu_df['timestamp'] = pd.to_datetime(cpu_df['timestamp'])
-                            
-                            # KST로 변환
-                            KST = timezone(timedelta(hours=9))
-                            cpu_df['timestamp_kst'] = cpu_df['timestamp'].dt.tz_convert(KST)
-                            
-                            fig_cpu = px.line(
-                                cpu_df, 
-                                x='timestamp_kst', 
-                                y='value',
-                                title=f"VM '{selected_vm}' CPU 사용률 (최근 24시간)",
-                                labels={'value': 'CPU 사용률 (%)', 'timestamp_kst': '시간 (KST)'},
-                                line_shape='spline'
-                            )
-                            fig_cpu.update_traces(line_color='#2E8B57', line_width=3)
-                            fig_cpu.update_layout(
-                                xaxis_title="시간 (KST)",
-                                yaxis_title="CPU 사용률 (%)",
-                                hovermode='x unified',
-                                showlegend=False
-                            )
-                            st.plotly_chart(fig_cpu, use_container_width=True)
-                        
-                        # 디스크 I/O 추이 차트
-                        if vm_trend['disk_trend']:
-                            st.markdown("#### 💾 디스크 I/O 추이 (24시간)")
-                            
-                            disk_df = pd.DataFrame(vm_trend['disk_trend'])
-                            disk_df['timestamp'] = pd.to_datetime(disk_df['timestamp'])
-                            
-                            # KST로 변환
-                            disk_df['timestamp_kst'] = disk_df['timestamp'].dt.tz_convert(KST)
-                            
-                            fig_disk = px.line(
-                                disk_df, 
-                                x='timestamp_kst', 
-                                y='value',
-                                title=f"VM '{selected_vm}' 디스크 읽기 (최근 24시간)",
-                                labels={'value': '디스크 읽기 (MB/h)', 'timestamp_kst': '시간 (KST)'},
-                                line_shape='spline'
-                            )
-                            fig_disk.update_traces(line_color='#4169E1', line_width=3)
-                            fig_disk.update_layout(
-                                xaxis_title="시간 (KST)",
-                                yaxis_title="디스크 읽기 (MB/h)",
-                                hovermode='x unified',
-                                showlegend=False
-                            )
-                            st.plotly_chart(fig_disk, use_container_width=True)
-                        
-                        # 요약 통계
-                        if vm_trend['cpu_trend']:
-                            cpu_values = [point['value'] for point in vm_trend['cpu_trend']]
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("평균 CPU", f"{sum(cpu_values)/len(cpu_values):.1f}%")
-                            with col2:
-                                st.metric("최대 CPU", f"{max(cpu_values):.1f}%")
-                            with col3:
-                                st.metric("최소 CPU", f"{min(cpu_values):.1f}%")
-                else:
-                    st.info("📊 24시간 추이 데이터가 없습니다. '추이 데이터 수집' 옵션을 체크하고 다시 조회해주세요.")
             
             # 데이터 다운로드
             st.markdown("---")

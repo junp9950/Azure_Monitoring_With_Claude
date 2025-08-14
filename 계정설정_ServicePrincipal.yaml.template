@@ -1,0 +1,24 @@
+# Service Principal 계정 설정 템플릿
+# 완전 자동화를 위한 Service Principal 인증 정보
+
+accounts:
+  - name: Production_Account
+    type: azure
+    tenant_id: your-tenant-id-here  # Azure Portal > Azure Active Directory > 속성
+    subscription_id: your-subscription-id-here  # Azure Portal > 구독
+    client_id: your-service-principal-client-id  # Service Principal 앱 ID
+    client_secret: your-service-principal-client-secret  # Service Principal 비밀번호
+    description: Production Environment with Service Principal
+
+# Service Principal 생성 방법:
+# 1. Azure Portal > Azure Active Directory > 앱 등록
+# 2. 새 등록 클릭
+# 3. 이름 입력 후 등록
+# 4. 개요에서 애플리케이션(클라이언트) ID 복사 (client_id)
+# 5. 인증서 및 비밀 > 클라이언트 비밀 > 새 클라이언트 비밀 (client_secret)
+# 6. 구독 > 액세스 제어(IAM) > 역할 할당 추가 > Reader 권한 부여
+
+# 보안 주의사항:
+# - 이 파일에는 민감한 인증 정보가 포함됩니다
+# - Git에 절대 커밋하지 마세요
+# - 최소 권한 원칙을 적용하세요

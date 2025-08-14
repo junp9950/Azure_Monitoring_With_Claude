@@ -1,0 +1,28 @@
+# Azure 계정 설정 템플릿
+# 이 파일을 복사해서 실제 계정 정보로 수정하세요
+
+accounts:
+  - name: Production_Account
+    type: azure
+    tenant_id: your-tenant-id-here  # Azure Portal > Azure Active Directory > 속성에서 확인
+    subscription_id: your-subscription-id-here  # Azure Portal > 구독에서 확인
+    description: Production Environment
+
+  - name: Development_Account
+    type: azure
+    tenant_id: your-tenant-id-here  # 개발환경 테넌트 ID
+    subscription_id: your-subscription-id-here  # 개발환경 구독 ID
+    description: Development Environment
+
+# AWS 계정 설정 (향후 지원 예정)
+aws_accounts:
+  - name: AWS_Production
+    type: aws
+    region: ap-northeast-2  # AWS 리전
+    profile: default  # AWS CLI 프로파일
+    description: AWS Production Environment
+
+# 사용법:
+# 1. 이 파일을 계정설정_공통.yaml로 복사
+# 2. your-tenant-id-here, your-subscription-id-here를 실제 값으로 변경
+# 3. 필요에 따라 계정을 추가하거나 제거

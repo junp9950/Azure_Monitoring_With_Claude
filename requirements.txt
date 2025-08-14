@@ -1,0 +1,19 @@
+# Azure SDK 패키지
+azure-identity>=1.15.0
+azure-mgmt-recoveryservices>=3.1.0
+azure-mgmt-recoveryservicesbackup>=9.2.0
+azure-mgmt-compute>=30.4.0
+azure-mgmt-monitor>=6.0.2
+azure-core>=1.29.0
+
+# YAML 지원
+PyYAML>=6.0
+
+# 웹 대시보드 패키지 (웹버전 사용시)
+streamlit>=1.28.0
+plotly>=5.17.0
+pandas>=2.1.0
+
+# 기타 유틸리티
+python-dateutil>=2.8.0
+numpy>=1.24.0

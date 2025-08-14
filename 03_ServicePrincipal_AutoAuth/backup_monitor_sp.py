@@ -1,5 +1,16 @@
 import json
 import logging
+
+# YAML 모듈 자동 설치
+try:
+    import yaml
+except ImportError:
+    import subprocess
+    import sys
+    print("PyYAML 패키지를 설치 중입니다...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyYAML>=6.0"])
+    import yaml
+    print("PyYAML 설치 완료!")
 from datetime import datetime, timezone, timedelta
 from azure.identity import ClientSecretCredential
 from azure.mgmt.recoveryservices import RecoveryServicesClient
@@ -19,15 +30,21 @@ logging.basicConfig(
 def load_accounts_config():
     """Service Principal 계정 설정 파일 로드"""
     try:
-        with open('../계정설정_서비스프린시팔.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        # YAML 파일 먼저 시도
+        with open('../계정설정_ServicePrincipal.yaml', 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
     except FileNotFoundError:
-        logging.error("계정설정_서비스프린시팔.json 파일을 찾을 수 없습니다.")
-        print("❌ 설정 파일 없음: 계정설정_서비스프린시팔.json 파일을 생성하고 Service Principal 정보를 입력하세요.")
-        return None
-    except json.JSONDecodeError:
-        logging.error("설정 파일 형식이 올바르지 않습니다.")
-        print("❌ 설정 파일 오류: JSON 형식을 확인하세요.")
+        try:
+            # 기존 JSON 파일 백업으로 시도
+            with open('../계정설정_서비스프린시팔.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logging.error("계정설정 파일을 찾을 수 없습니다.")
+            print("❌ 설정 파일 없음: 계정설정_ServicePrincipal.yaml 또는 계정설정_서비스프린시팔.json 파일을 생성하고 Service Principal 정보를 입력하세요.")
+            return None
+    except (json.JSONDecodeError, yaml.YAMLError) as e:
+        logging.error(f"설정 파일 형식이 올바르지 않습니다: {e}")
+        print(f"❌ 설정 파일 오류: 형식을 확인하세요. {e}")
         return None
 
 def validate_account_config(account_info):
