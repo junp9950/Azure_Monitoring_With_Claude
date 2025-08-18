@@ -498,6 +498,146 @@ def get_azure_vms(account_info, progress_bar, status_text, collect_metrics=True)
         st.error(f"🚨 {account_info['name']} 예상치 못한 오류 - {str(e)}")
         return []
 
+def get_azure_vmss(account_info, progress_bar, status_text, collect_metrics=True):
+    """Azure VMSS 목록, 상태 및 메트릭 조회"""
+    try:
+        status_text.text(f"🔐 {account_info['name']} VMSS Azure 인증 중...")
+        progress_bar.progress(0.1)
+        
+        # Azure 클라이언트 생성 (캐시된 인증 사용)
+        compute_client = st.session_state.credential_manager.get_compute_client(
+            account_info['tenant_id'], 
+            account_info['subscription_id']
+        )
+        monitor_client = st.session_state.credential_manager.get_monitor_client(
+            account_info['tenant_id'], 
+            account_info['subscription_id']
+        ) if collect_metrics else None
+        
+        status_text.text(f"⚖️ {account_info['name']} VMSS 목록 조회 중...")
+        progress_bar.progress(0.2)
+        
+        # VMSS 목록 조회
+        vmss_list = list(compute_client.virtual_machine_scale_sets.list_all())
+        vmss_data = []
+        KST = timezone(timedelta(hours=9))
+        
+        for idx, vmss in enumerate(vmss_list):
+            try:
+                # 진행률 업데이트
+                vmss_progress = 0.2 + (0.6 * idx / len(vmss_list)) if vmss_list else 1.0
+                progress_bar.progress(vmss_progress)
+                status_text.text(f"🔍 VMSS '{vmss.name}' 정보 수집 중... ({idx+1}/{len(vmss_list)})")
+                
+                # VMSS 상세 정보 조회
+                resource_group = vmss.id.split('/')[4]
+                vmss_detail = compute_client.virtual_machine_scale_sets.get(resource_group, vmss.name)
+                
+                # VMSS 인스턴스 목록 조회
+                instances = list(compute_client.virtual_machine_scale_set_vms.list(resource_group, vmss.name))
+                
+                # 인스턴스 상태 집계
+                instance_states = {}
+                running_instances = 0
+                total_instances = len(instances)
+                
+                for instance in instances:
+                    instance_view = compute_client.virtual_machine_scale_set_vms.get_instance_view(
+                        resource_group, vmss.name, instance.instance_id
+                    )
+                    
+                    power_state = 'Unknown'
+                    if instance_view.statuses:
+                        for status in instance_view.statuses:
+                            if status.code.startswith('PowerState/'):
+                                power_state = status.display_status
+                                break
+                    
+                    instance_states[instance.instance_id] = power_state
+                    if power_state == 'VM running':
+                        running_instances += 1
+                
+                # 평균 메트릭 계산 (실행 중인 인스턴스만)
+                avg_cpu = 'N/A'
+                avg_memory = 'N/A'
+                avg_disk = 'N/A'
+                
+                if collect_metrics and monitor_client and running_instances > 0:
+                    try:
+                        status_text.text(f"📊 VMSS '{vmss.name}' 메트릭 수집 중...")
+                        
+                        # 최근 5분간 메트릭 조회
+                        end_time = datetime.utcnow()
+                        start_time = end_time - timedelta(minutes=5)
+                        
+                        # VMSS 전체 CPU 사용률 평균
+                        cpu_metrics = monitor_client.metrics.list(
+                            resource_uri=vmss.id,
+                            timespan=f"{start_time.isoformat()}/{end_time.isoformat()}",
+                            interval='PT1M',
+                            metricnames='Percentage CPU',
+                            aggregation='Average'
+                        )
+                        
+                        if cpu_metrics.value and cpu_metrics.value[0].timeseries:
+                            cpu_data = cpu_metrics.value[0].timeseries[0].data
+                            if cpu_data and cpu_data[-1].average is not None:
+                                avg_cpu = f"{cpu_data[-1].average:.1f}%"
+                    except Exception as metric_error:
+                        avg_cpu = 'Error'
+                
+                vmss_info = {
+                    'account_name': account_info['name'],
+                    'vmss_name': vmss.name,
+                    'resource_group': resource_group,
+                    'location': vmss.location,
+                    'vm_size': vmss_detail.sku.name if vmss_detail.sku else 'N/A',
+                    'capacity': vmss_detail.sku.capacity if vmss_detail.sku else 0,
+                    'total_instances': total_instances,
+                    'running_instances': running_instances,
+                    'stopped_instances': total_instances - running_instances,
+                    'upgrade_policy': vmss_detail.upgrade_policy.mode if vmss_detail.upgrade_policy else 'N/A',
+                    'provisioning_state': vmss_detail.provisioning_state or 'Unknown',
+                    'os_type': str(vmss_detail.virtual_machine_profile.storage_profile.os_disk.os_type) if (
+                        vmss_detail.virtual_machine_profile and 
+                        vmss_detail.virtual_machine_profile.storage_profile and 
+                        vmss_detail.virtual_machine_profile.storage_profile.os_disk and
+                        vmss_detail.virtual_machine_profile.storage_profile.os_disk.os_type
+                    ) else 'N/A',
+                    'avg_cpu_usage': avg_cpu,
+                    'avg_memory_usage': avg_memory,
+                    'avg_disk_usage': avg_disk,
+                    'instance_states': instance_states
+                }
+                
+                vmss_data.append(vmss_info)
+                
+            except Exception as vmss_error:
+                st.warning(f"⚠️ VMSS '{vmss.name}' 정보 조회 실패: {str(vmss_error)[:100]}...")
+                continue
+        
+        progress_bar.progress(1.0)
+        metrics_note = " (메트릭 포함)" if collect_metrics else " (기본 정보만)"
+        status_text.text(f"✅ {account_info['name']}: {len(vmss_data)}개 VMSS 조회 완료{metrics_note}")
+        return vmss_data
+        
+    except AzureError as e:
+        error_msg = str(e)
+        st.error(f"🚨 {account_info['name']} Azure VMSS 조회 오류")
+        st.error(f"📋 오류 내용: {error_msg}")
+        
+        if "authentication" in error_msg.lower():
+            st.error("💡 해결방법: 브라우저에서 Azure 로그인을 다시 시도하세요.")
+        elif "forbidden" in error_msg.lower() or "unauthorized" in error_msg.lower():
+            st.error("💡 해결방법: Azure 구독에 대한 Reader 권한을 확인하세요.")
+        else:
+            st.error("💡 해결방법: 1) Azure 로그인 재시도 2) 권한 확인 3) 네트워크 연결 확인")
+        
+        return []
+    except Exception as e:
+        st.error(f"🚨 {account_info['name']} VMSS 예상치 못한 오류 - {str(e)}")
+        return []
+
 def get_backup_jobs(account_info, progress_bar, status_text):
     """특정 계정의 백업 작업 조회 (개선된 오류 처리 및 타임아웃)"""
     import threading
@@ -732,8 +872,20 @@ def display_metrics(df):
         st.metric("오늘 실행", today_jobs)
 
 def display_vm_monitoring():
-    """Azure VM 모니터링 화면"""
-    st.subheader("🖥️ Azure VM 인스턴스 모니터링")
+    """Azure VM 및 VMSS 모니터링 화면"""
+    
+    # 모니터링 타입 선택 탭
+    vm_tab, vmss_tab = st.tabs(["🖥️ Virtual Machines", "⚖️ VM Scale Sets"])
+    
+    with vm_tab:
+        display_vm_instances()
+    
+    with vmss_tab:
+        display_vmss_instances()
+
+def display_vm_instances():
+    """Azure VM 인스턴스 모니터링"""
+    st.subheader("🖥️ Azure Virtual Machine 모니터링")
     
     # 설정 파일 로드
     config = load_accounts_config()
@@ -1276,6 +1428,291 @@ def display_vm_monitoring():
             ])
             st.dataframe(account_df, use_container_width=True)
 
+def display_vmss_instances():
+    """Azure VMSS 인스턴스 모니터링"""
+    st.subheader("⚖️ Azure VM Scale Set 모니터링")
+    
+    # 설정 파일 로드
+    config = load_accounts_config()
+    if not config:
+        return
+    
+    accounts = config.get('accounts', [])
+    if not accounts:
+        st.warning("⚠️ 설정된 Azure 계정이 없습니다.")
+        st.info("💡 계정설정_공통.yaml 파일에 Azure 계정 정보를 추가하세요.")
+        return
+    
+    # Azure 계정 선택
+    account_names = [acc['name'] for acc in accounts]
+    selected_accounts = st.multiselect(
+        "🏢 모니터링할 Azure 계정 선택",
+        account_names,
+        default=account_names,
+        help="VMSS 상태를 확인할 Azure 계정을 선택하세요",
+        key="vmss_account_select"
+    )
+    
+    # 메트릭 수집 옵션
+    col_option1, col_option2 = st.columns(2)
+    
+    with col_option1:
+        collect_metrics = st.checkbox("📊 실시간 메트릭 수집", 
+                                     value=True, 
+                                     help="VMSS의 현재 CPU 사용률을 수집합니다.",
+                                     key="vmss_metrics")
+    
+    with col_option2:
+        pass
+    
+    if collect_metrics:
+        st.info("💡 메트릭 수집은 실행 중인 VMSS 인스턴스에 대해서만 진행됩니다.")
+    
+    # VMSS 조회 버튼
+    if st.button("🚀 Azure VMSS 상태 조회", type="primary"):
+        if not selected_accounts:
+            st.warning("⚠️ 최소 하나의 Azure 계정을 선택해주세요.")
+            return
+        
+        # 선택된 계정 필터링
+        selected_configs = [acc for acc in accounts if acc['name'] in selected_accounts]
+        
+        # 진행상황 표시
+        st.subheader("🔄 Azure VMSS 모니터링 진행 중...")
+        
+        # 전체 진행률 표시
+        overall_progress = st.progress(0)
+        overall_status = st.empty()
+        
+        all_vmss = []
+        total_accounts = len(selected_configs)
+        
+        for i, account in enumerate(selected_configs):
+            # 계정별 섹션
+            with st.expander(f"☁️ [{i+1}/{total_accounts}] {account['name']}", expanded=True):
+                
+                # 개별 계정 진행상황
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # 계정 정보 표시
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**구독 ID:** {account['subscription_id'][:8]}...")
+                with col2:
+                    st.write(f"**테넌트 ID:** {account['tenant_id'][:8]}...")
+                
+                # 작업 시작 시간 기록
+                start_time = time.time()
+                
+                vmss_data = get_azure_vmss(account, progress_bar, status_text, collect_metrics)
+                all_vmss.extend(vmss_data)
+                
+                # 작업 완료 시간 계산
+                elapsed_time = time.time() - start_time
+                
+                # 결과 요약 표시
+                if vmss_data:
+                    st.success(f"✅ {len(vmss_data)}개 VMSS 조회 완료 ({elapsed_time:.1f}초 소요)")
+                else:
+                    st.info(f"ℹ️ Azure VMSS 없음 ({elapsed_time:.1f}초 소요)")
+            
+            # 전체 진행률 업데이트
+            overall_progress_value = (i + 1) / total_accounts
+            overall_progress.progress(overall_progress_value)
+            overall_status.text(f"🔄 {i+1}/{total_accounts} 계정 처리 완료 ({(overall_progress_value*100):.1f}%)")
+            
+            time.sleep(0.3)  # UI 업데이트를 위한 대기
+        
+        # 결과 저장 (세션 상태)
+        st.session_state['azure_vmss'] = all_vmss
+        st.session_state['vmss_last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        st.success(f"✅ 총 {len(all_vmss)}개 Azure VMSS를 조회했습니다!")
+    
+    # VMSS 결과 표시
+    if 'azure_vmss' in st.session_state:
+        st.markdown("---")
+        
+        # 마지막 업데이트 시간
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader("⚖️ Azure VMSS 모니터링 결과")
+        with col2:
+            st.caption(f"🕐 마지막 업데이트: {st.session_state.get('vmss_last_update', 'N/A')}")
+        
+        vmss_data = st.session_state['azure_vmss']
+        
+        if vmss_data:
+            # DataFrame 생성
+            df = pd.DataFrame(vmss_data)
+            
+            # 주요 지표
+            col1, col2, col3, col4 = st.columns(4)
+            
+            total_vmss = len(df)
+            total_instances = df['total_instances'].sum()
+            running_instances = df['running_instances'].sum()
+            stopped_instances = df['stopped_instances'].sum()
+            
+            with col1:
+                st.metric("총 VMSS", total_vmss)
+            with col2:
+                st.metric("전체 인스턴스", total_instances)
+            with col3:
+                st.metric("실행 중", running_instances)
+            with col4:
+                st.metric("중지됨", stopped_instances)
+            
+            st.markdown("---")
+            
+            # 차트
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # 계정별 VMSS 수
+                account_counts = df.groupby('account_name').size().reset_index(name='count')
+                fig1 = px.bar(
+                    account_counts, 
+                    x='account_name', 
+                    y='count',
+                    title='📊 계정별 VMSS 수',
+                    color='count',
+                    color_continuous_scale='Blues'
+                )
+                fig1.update_layout(showlegend=False)
+                st.plotly_chart(fig1, use_container_width=True)
+            
+            with col2:
+                # 인스턴스 상태 분포
+                status_data = {
+                    '실행 중': running_instances,
+                    '중지됨': stopped_instances
+                }
+                
+                if sum(status_data.values()) > 0:
+                    fig2 = px.pie(
+                        values=list(status_data.values()),
+                        names=list(status_data.keys()),
+                        title='📈 인스턴스 상태 분포',
+                        color_discrete_map={'실행 중': '#28a745', '중지됨': '#dc3545'}
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # 필터링 옵션
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                account_filter = st.selectbox(
+                    "계정 필터",
+                    ['전체'] + list(df['account_name'].unique()),
+                    key="vmss_account_filter"
+                )
+            
+            with col2:
+                location_filter = st.selectbox(
+                    "위치 필터",
+                    ['전체'] + list(df['location'].unique()),
+                    key="vmss_location_filter"
+                )
+            
+            with col3:
+                status_filter = st.selectbox(
+                    "상태 필터",
+                    ['전체', '실행 중 있음', '모두 중지'],
+                    key="vmss_status_filter"
+                )
+            
+            # 필터링 적용
+            filtered_df = df.copy()
+            
+            if account_filter != '전체':
+                filtered_df = filtered_df[filtered_df['account_name'] == account_filter]
+            
+            if location_filter != '전체':
+                filtered_df = filtered_df[filtered_df['location'] == location_filter]
+            
+            if status_filter == '실행 중 있음':
+                filtered_df = filtered_df[filtered_df['running_instances'] > 0]
+            elif status_filter == '모두 중지':
+                filtered_df = filtered_df[filtered_df['running_instances'] == 0]
+            
+            st.subheader(f"📊 VMSS 목록 ({len(filtered_df)}개)")
+            
+            # VMSS 테이블 표시
+            display_columns = [
+                'account_name', 'vmss_name', 'resource_group', 'location', 
+                'vm_size', 'total_instances', 'running_instances', 'stopped_instances',
+                'avg_cpu_usage', 'upgrade_policy', 'provisioning_state', 'os_type'
+            ]
+            
+            # 컬럼이 존재하는 것만 선택
+            available_columns = [col for col in display_columns if col in filtered_df.columns]
+            display_df = filtered_df[available_columns]
+            
+            # 컬럼명 한글화
+            column_mapping = {
+                'account_name': '계정명',
+                'vmss_name': 'VMSS 이름',
+                'resource_group': '리소스 그룹',
+                'location': '위치',
+                'vm_size': 'VM 크기',
+                'total_instances': '총 인스턴스',
+                'running_instances': '실행 중',
+                'stopped_instances': '중지됨',
+                'avg_cpu_usage': 'CPU 사용률',
+                'upgrade_policy': '업그레이드 정책',
+                'provisioning_state': '프로비저닝 상태',
+                'os_type': 'OS 종류'
+            }
+            
+            # 테이블 표시
+            st.dataframe(
+                display_df.rename(columns=column_mapping),
+                use_container_width=True,
+                column_config={
+                    "계정명": st.column_config.TextColumn("계정명", width="medium"),
+                    "VMSS 이름": st.column_config.TextColumn("VMSS 이름", width="medium"),
+                    "CPU 사용률": st.column_config.TextColumn("CPU 사용률", width="small"),
+                    "총 인스턴스": st.column_config.NumberColumn("총 인스턴스", width="small"),
+                    "실행 중": st.column_config.NumberColumn("실행 중", width="small"),
+                    "중지됨": st.column_config.NumberColumn("중지됨", width="small")
+                },
+                height=400
+            )
+            
+            # 데이터 다운로드
+            st.markdown("---")
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="📥 VMSS CSV 다운로드",
+                data=csv,
+                file_name=f"azure_vmss_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        else:
+            st.info("📊 조회된 Azure VMSS가 없습니다.")
+    
+    else:
+        # 초기 화면
+        st.info("👈 Azure 계정을 선택하고 'Azure VMSS 상태 조회' 버튼을 클릭하세요.")
+        
+        # 설정 파일 정보 표시
+        if config and accounts:
+            st.subheader("📋 설정된 Azure 계정 목록")
+            account_df = pd.DataFrame([
+                {
+                    '계정명': acc['name'],
+                    '설명': acc.get('description', ''),
+                    '구독 ID': acc['subscription_id'][:8] + '...'  # 보안을 위해 일부만 표시
+                }
+                for acc in accounts
+            ])
+            st.dataframe(account_df, use_container_width=True)
+
 def main():
     """메인 애플리케이션"""
     st.title("☁️ 클라우드 인프라 모니터링 대시보드")
@@ -1283,13 +1720,13 @@ def main():
     st.markdown("---")
     
     # 탭 생성
-    tab1, tab2 = st.tabs(["💾 Azure 백업 모니터링", "🖥️ Azure VM 모니터링"])
+    tab1, tab2 = st.tabs(["🖥️ Azure VM 모니터링", "💾 Azure 백업 모니터링"])
     
     with tab1:
-        display_azure_backup_monitoring()
+        display_vm_monitoring()
     
     with tab2:
-        display_vm_monitoring()
+        display_azure_backup_monitoring()
 
 def display_azure_backup_monitoring():
     """Azure 백업 모니터링 화면"""
